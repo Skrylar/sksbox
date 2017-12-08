@@ -31,7 +31,6 @@ type
 
 const
   SboxSignature* = [115'u8, 98'u8, 48'u8, 88'u8]
-  DirectoryEntryFieldCount = 3
 
 proc open*(self: var SboxWriter; s: Stream) =
   if self.entries == nil:
@@ -54,8 +53,8 @@ proc write_header*(self: var SboxWriter; signature: UserSignature) =
   ## writes a blank diroff in case it is written at the file's end.
   self.s.write_data(unsafeAddr signature[0], signature.len)
   for b in SboxSignature: self.s.write(b)
-  self.diroff = self.s.get_position
-  self.s.write(0'u32)
+  self.diroffbmk = self.s.get_position
+  self.s.write(0.DirectoryFieldType)
 
 proc open_block*(self: var SboxWriter; blockname: string) =
   ## Informs the writer you are starting a new block.  Directory
@@ -87,30 +86,44 @@ proc close_block*(self: var SboxWriter; blockname: string = nil) =
   self.entries[latest].value_size = self.s.get_position().DirectoryFieldType - self.entries[latest].value_offset
 
 proc pad_stream(self: var SboxWriter) =
-  let padding = self.s.get_position /% 4
+  let padding = self.s.get_position %% 4
+  echo padding
   for i in 0..<padding:
     self.s.write(0'u8)
 
 proc write_directory*(self: var SboxWriter) =
   self.pad_stream
+  self.diroff = self.s.get_position
+
+  self.s.write(0.DirectoryFieldType) # empty directory size, for now
+  for b in SboxSignature: self.s.write(b)
+
   for entry in self.entries:
+    var n = entry.name
     self.s.write(entry.value_offset)
     self.s.write(entry.value_size)
     self.s.write(entry.name.len.DirectoryFieldType)
-    self.s.write_data(addr entry.name[0], entry.name.len)
+    self.s.write_data(unsafeAddr n[0], n.len)
     self.pad_stream
+
+  self.pad_stream               # just in case
+  let bmk = self.s.get_position
+  let dirsize = bmk - self.diroff
+  self.s.set_position self.diroff
+  self.s.write(dirsize.DirectoryFieldType)
+  self.s.set_position bmk
 
 proc write_tail*(self: var SboxWriter) =
   self.pad_stream        # make sure tail ends on a four byte boundary
+  assert(self.diroff > 0)       # make sure you didn't do a bad
   # maybe write diroff location
   if self.diroff_location == DiroffAtEnd:
     self.s.write(self.diroff.uint32) # write it
   else:                              # otherwise seek back and write there
-    assert(self.s.diroff > 0)        # make sure you didn't do a bad
-    self.s.write(0'u32)
-    let bmk = self.s.get_location
-    self.s.set_location(self.diroffbmk)
-    self.s.write(self.s.diroff)
-    self.s.set_location(bmk)
+    self.s.write(0.DirectoryFieldType)
+    let bmk = self.s.get_position()
+    self.s.set_position(self.diroffbmk)
+    self.s.write(self.diroff.DirectoryFieldType)
+    self.s.set_position(bmk)
   # write tail signature
   for b in SboxSignature: self.s.write(b)
