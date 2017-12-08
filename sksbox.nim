@@ -87,7 +87,6 @@ proc close_block*(self: var SboxWriter; blockname: string = nil) =
 
 proc pad_stream(self: var SboxWriter) =
   let padding = self.s.get_position %% 4
-  echo padding
   for i in 0..<padding:
     self.s.write(0'u8)
 
