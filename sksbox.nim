@@ -94,8 +94,8 @@ proc write_directory*(self: var SboxWriter) =
   self.pad_stream
   self.diroff = self.s.get_position
 
-  self.s.write(0.DirectoryFieldType) # empty directory size, for now
   for b in SboxSignature: self.s.write(b)
+  self.s.write(0.DirectoryFieldType) # empty directory size, for now
 
   for entry in self.entries:
     var n = entry.name
