@@ -108,7 +108,7 @@ proc write_directory*(self: var SboxWriter) =
   self.pad_stream               # just in case
   let bmk = self.s.get_position
   let dirsize = bmk - self.diroff
-  self.s.set_position self.diroff
+  self.s.set_position self.diroff + SboxSignature.len
   self.s.write(dirsize.DirectoryFieldType)
   self.s.set_position bmk
 
