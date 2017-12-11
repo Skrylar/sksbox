@@ -29,8 +29,15 @@ type
     diroffbmk: int           # Position that diroff can be written to.
     diroff: int              # Where DID we actually write the offset?
 
+  SboxReader* = object
+    diroff_location*: DiroffLocation # Where is diroff?
+    dirsize*: DirectoryFieldType     # Size of directory remaining.
+    diroffbmk: int                   # Where are we in the directory?
+    s: Stream                        # Where we read from.
+
 const
   SboxSignature* = [115'u8, 98'u8, 48'u8, 88'u8]
+  DefaultMaxNameLength = 1024
 
 proc open*(self: var SboxWriter; s: Stream) =
   if self.entries == nil:
@@ -126,3 +133,124 @@ proc write_tail*(self: var SboxWriter) =
     self.s.set_position(bmk)
   # write tail signature
   for b in SboxSignature: self.s.write(b)
+
+proc open*(self: var SboxReader; stream: Stream) =
+  self.dirsize = 0
+  self.s = stream
+
+proc read_header*(self: var SboxReader; signature: var UserSignature; eof: int = 0): bool =
+  ## Attempts to read an sbox file header.  The file signature is
+  ## written to ``signature''.  ``eof'' is a marker for the end of the
+  ## sbox stream.  sbox files which store directory offsets at the end
+  ## of the file require seeking to the end, which is interpreted as
+  ## ``eof'' unless ``eof'' is zero.  You should set ``eof'' to
+  ## ex. the length of a file, or at least the end of where an sbox is
+  ## stored within a larger stream, as the tail offset starts usually
+  ## eight bytes prior to eof.  If ``eof'' is zero and the directory
+  ## offset is written at the tail, an exception is thrown as we won't
+  ## know where to look.  If possible, the underlying stream will be
+  ## left at the beginning of the directory.
+
+  # TODO base seeking off byte we start at, so we have a fully position independent reader; currently we assume the end is possibly unknown yet the start is always zero
+  var sbox: array[0..SboxSignature.high, uint8]
+  # read file signature
+  var readlen = self.s.readdata(addr signature[0], UserSignature.high+1)
+  if readlen < UserSignature.high:
+    writeStackTrace()
+    return false
+  # read sbox signature
+  readlen = self.s.readdata(addr sbox[0], SboxSignature.len)
+  if readlen < SboxSignature.high:
+    writeStackTrace()
+    return false
+  # ensure sbox signature is valid
+  for i in 0..sbox.high:
+    if sbox[i] != SboxSignature[i]:
+      writeStackTrace()
+      return false
+  # now read diroff
+  var diroff: DirectoryFieldType
+  readlen = self.s.readdata(addr diroff, DirectoryFieldType.sizeof)
+  if readlen < DirectoryFieldType.sizeof:
+    writeStackTrace()
+    return false
+  # figure out if this is known to the start, or end, of the sbox file
+  if diroff == 0: self.diroff_location = DiroffAtEnd
+  else: self.diroff_location = DiroffAtStart
+  # ok, now we must handle finding the directory
+  case self.diroff_location:
+    of DiroffAtStart:           # we already read it
+      discard
+    of DiroffAtEnd:             # have to seek and find it
+      assert eof > 0            # TODO proper exception
+      self.s.set_position(eof - SboxSignature.len) # seek to tail
+      # check that sbox tag is here at the end
+      readlen = self.s.readdata(addr sbox[0], SboxSignature.len)
+      if readlen < SboxSignature.len:
+        writeStackTrace()
+        return false
+      for i in 0..sbox.high:
+        if sbox[i] != SboxSignature[i]:
+          writeStackTrace()
+          return false
+      # now find diroff
+      self.s.set_position(eof - (DirectoryFieldType.sizeof.int + SboxSignature.len))
+      readlen = self.s.readdata(addr diroff, DirectoryFieldType.sizeof)
+      if readlen < DirectoryFieldType.sizeof:
+        writeStackTrace()
+        return false
+  # seek to directory and we are done!
+  self.s.set_position(diroff.int)
+  # check that sbox tag is here at the directory
+  readlen = self.s.readdata(addr sbox[0], SboxSignature.len)
+  if readlen < SboxSignature.len:
+    writeStackTrace()
+    return false
+  for i in 0..sbox.high:
+    if sbox[i] != SboxSignature[i]:
+      writeStackTrace()
+      return false
+  # read dir
+  readlen = self.s.readdata(addr diroff, DirectoryFieldType.sizeof)
+  if readlen < DirectoryFieldType.sizeof:
+    writeStackTrace()
+    return false
+  self.dirsize = diroff
+  self.diroffbmk = self.s.get_position()
+  # success
+  return true
+
+proc read_next*(self: var SboxReader; data_start, data_len: out DirectoryFieldType; name: out string; max_name_length: int = DefaultMaxNameLength): bool =
+  # fail if remaining size is smaller than an entry even can be
+  if self.dirsize < (DirectoryFieldType.sizeof.int * 3): return false
+  # move to directory entry
+  self.s.set_position(self.diroffbmk)
+
+  # read length of entries
+  var value_offset, value_size, name_size: DirectoryFieldType
+  if self.s.read_data(addr value_offset, DirectoryFieldType.sizeof) < DirectoryFieldType.sizeof.int: return false
+  if self.s.read_data(addr value_size, DirectoryFieldType.sizeof) < DirectoryFieldType.sizeof.int: return false
+  if self.s.read_data(addr name_size, DirectoryFieldType.sizeof) < DirectoryFieldType.sizeof.int: return false
+
+  # export data information
+  data_start = value_offset
+  data_len = value_size
+
+  # export the name, reading it if we have to
+  if name_size < 1 or max_name_length < 1:
+    name = nil                  # no name to export
+  else:                         # get as much as we can
+    assert(max_name_length >= 1)
+    var out_name = new_string(min(max_name_length, name_size.int))
+    discard self.s.read_data(cast[pointer](addr out_name[0]), name_size.int)
+    name = out_name
+
+  # seek next padded space
+  let padding = self.s.get_position %% 4
+  self.s.set_position(self.s.get_position + padding)
+
+  # book keeping
+  let here = self.s.get_position()
+  dec self.dirsize, (here - self.diroffbmk)
+  self.diroffbmk = here
+  return true
