@@ -1,0 +1,195 @@
+
+@top sboxspec10
+
+@appendix sBOX File Format Specification v1.0
+
+Copyright 1998-2000 Sean Barrett (sean at nothings dot org).
+
+Current homepage: @url{http://nothings.org/sbox/sbox.html}
+
+(Editor's note: There are further appendices to the sBOX file format, primarily rationale for choices and example files.  Those are avalable at the site (should it still exist at time of reading), but were omitted from this appendix.)
+
+@appendixsec Introduction
+The sBOX file format is a simple, lightweight, carefully defined and engineered meta-file format. It allows creation of various sorts of tagged or indexed file formats layered atop the core meta-format.
+
+sBOX is designed to provide:
+
+@itemize
+@item
+A collection of data organized as a series of <name, value> pairs, and an ordering of those pairs.
+@item
+Fast performance for locating a value given a name, assuming that names are relatively small compared to values.
+@end itemize
+
+sBOX does not provide:
+
+@itemize
+@item
+A mechanism for validating the integrity of contents (e.g. CRC).
+@item
+An efficient disk-based indexing scheme (e.g. B-trees)--it is assumed the entire index will be stored in memory, or if a disk-based index is needed, it will be generated at run-time, rather than being part of the file format. 
+@end itemize
+
+sBOX is designed to be used in write-once read-many applications, where data must be accessed in a random order. sBOX is designed to supply the file structure, while the sBOX client defines the actual content of the file format.
+
+sBOX is less useful for a sequential-read data file format, where a simple linear sequence of names and values will suffice. It can be used for write-many file formats, but it was not designed to favor that approach.
+
+sBOX is somewhat reminiscent of @acronym{RIFF,Resource Interchange File Format}, defined by Microsoft. However, sBOX is engineered to solve somewhat different problems; for example, RIFF is a sequential format. @footnote{The widely deployed WAV audio sample file format is layered on top of RIFF.}
+
+The main part of this specification gives the definition of the file format. An appendix summarizes the file format in a simple table.
+
+Another appendix provides examples of how to use the meta-file-format to construct other file-formats. A further appendix gives the rationale for many design decisions. Although these appendices are not part of the formal specification, reading them can help users understand the design and how it should be used.
+
+@appendixsec Data Representation
+
+All data in an sBOX file consists of either uninterpreted sequences of bytes or 4-byte integers. Integers are stored in "little-endian" order: the least significant byte first, then each of the more significant bytes, in order.
+
+@appendixsec File Structure
+
+An sBOX file always contains a header, a tail, a directory, and zero or more data blocks.
+
+@appendixsubsec sBOX header
+
+The first twenty-four bytes of an sBOX file constitute the sBOX header. The first sixteen bytes are undefined; any set of values in the first sixteen bytes can still indicate a valid sBOX file.
+
+The following four bytes (the seventeenth through twentieth) contain the sBOX signature, and consist of the following decimal values:
+
+@example
+115 98 48 88
+@end example
+
+The second four bytes of the sBOX header are interpreted as an integer value; this value is referred to as @code{Diroff} in the remainder of this specification.
+
+@appendixsubsec sBOX tail
+
+The last eight bytes of an sBOX file constitute the sBOX tail. The location of the tail as an offset from the beginning of the file must be a multiple of four.
+
+The second four bytes (the last four bytes of the file) of the tail must contain the sBOX signature:
+
+@example
+115 98 48 88
+@end example
+
+If (and only if) the value of @code{Diroff} found in the header is 0, then the first four bytes of the tail are treated as an integer and @code{Diroff} is understood to be this value, rather than the 0 value found in the header.
+
+@appendixsubsec sBOX directory header
+
+ The value of @code{Diroff} (which is defined in either the header or the tail) is understood to be the file offset of the directory. The value must be a multiple of four.
+
+Additionally, @code{Diroff} must be greater than or equal to eight, and must be less than or equal to twelve less than the length of the file.
+
+The first four bytes found at the location @code{Diroff} must contain the sBOX signature:
+
+@example
+115 98 48 88
+@end example
+
+The directory proper contains the names and provides the location of the values. This is described in the chapter, ``Directory Structure.''
+
+@appendixsubsec Data Blocks
+
+@emph{Note: This section does not actually specify anything; it merely provides some context.}
+
+The value fields of each <name, value> pair are stored in data blocks which can be located anywhere in the file. The directory specifies the location and length of these blocks.
+
+@appendixsubsec Miscellaneous File Layout Information
+
+The sBOX file format is specified in terms of the data required to parse it. No particular constraints are placed on the general layout of data; e.g. data blocks can overlap or contain each other; a data block can overlap the directory, the head, or the tail. There can be space in the file which does not belong to neither the header, tail, directory, or any data block. The only explicit constraints on file layout, besides the precise location of the header and tail, are:
+
+@itemize
+@item
+The header cannot overlap the directory.
+@item
+The directory cannot overlap the defined values in the tail.
+@end itemize
+
+The extra terminology about the directory-tail interaction refers to the fact that the @code{Diroff} value in the tail isn't actually used if the @code{Diroff} in the header is non-zero.
+
+@appendixsec Directory Structure
+
+The directory header consists of eight bytes starting at the location @code{@code{Diroff}}. The first four bytes are the directory signature. The fifth through eight bytes are interpreted as an integer value called @code{Dirsize}; it must be a multiple of four.
+
+The directory proper begins at location @code{Diroff+8}. It is exactly @code{Dirsize} bytes long. Each <name, value> pair in the file has a single entry in the directory. The number of items in the file can be inferred from the directory, but is not stored explicitly.
+
+The directory consists of a sequence of directory entries, each stored consecutively.
+
+A directory entry consists of four fields, plus padding:
+
+@table @strong
+@item value
+location The location of the value in the file.
+@item value size
+The length of the value.
+@item name size
+The length of the name
+@item name data
+The bytes of the name itself.
+@item padding
+0 to 3 padding bytes (value must be 0) which pad the length of the directory entry to be a multiple of four.
+@end table
+
+The first three fields are integers. Thus, within each directory entry, the ofset of the value location is 0, the offset of the value size is 4, the offset of the name size is 8, and the offset of the name data is 12.
+
+The next directory entry appears immediately after the padding, in other words, at a relative offset of @code{12+Namesize+padding-length}. See the summary table for an explicit representation of the length of the padding.
+
+The final directory entry must end exactly at the end of the directory (that is, @code{Dirsize} bytes after the beginning).
+
+Names can contain any sequence of byte values. Names need not be unique. Names need not be in any particular order.
+
+This completes the specification of the core sBOX file format.
+
+@appendixsec Extensions
+
+This section defines several possible formal properties of sBOX files. These definitions may be useful in defining derived file formats.
+
+@appendixsubsec Copyable Form
+
+An sBOX file is said to be in copyable form if it can be safely copied by a generic sBOX copier. Whether a file is in copyable form is determined both by its physical layout, and by certain semantic qualities. Without knowledge of the semantics, it is impossible to say whether a given file is copyable or not.
+
+@itemize
+@item
+All blocks must be non-overlapping.
+@item
+The file should not contain any semantically meaningful data in the "dead areas" of the file (that is, in the portions of the file that are neither the header, tail, directory, nor one of the data blocks defined by the directory).
+@item
+The file should not contain any references to absolute locations within the file, except those defined by the sBOX format. (References within a block, by offset from the beginning of the block, are allowed.)
+@end itemize
+
+Essentially, a file in copyable form will still "contain the same information" if it is copied by a file copier which only copies the data exposed via the sBOX interface.
+
+It is @strong{strongly} recommended that derived file types require the file format be copyable.
+
+@appendixsubsec Canonical Form
+
+An sBOX file is said to be in @emph{canonical form} if it obeys the following list of constraints.
+
+@itemize
+@item
+The file is copyable.
+@item
+@code{Diroff} is defined in the header.
+@item
+The value of @code{Diroff} is 24.
+@item
+The data blocks appear in the same order in the file that they are referenced in the directory. In other words, the directory entries are sorted in order of their value's file offset.
+@item
+The first data block appears immediately after the end of the directory (at offset @code{32+Dirsize})
+@item
+After each data block there are 0..3 bytes, zero-valued, sufficient to "pad the data block" to a 4-aligned address (an address which is a muliple of four). The next block (or the tail) starts at this 4-aligned address.
+@end itemize
+
+The ``canonical form'' for a given sBOX file is unique; any and all sBOX writers/copiers should produce an identical canonical-form file given the same ordered <name, value> pairs.
+
+It is recommended that if a derived file format wishes to require a single fixed format (e.g. because it is desired that file-compares indicate whether file "contents" are identical), then the canonical form should be used.
+
+See rationale: Canonical form
+
+@appendixsec Limitations
+
+The sBOX format is limited to 4G files. (A 64-bit version of sBOX which uses 8-byte integers and 8-byte alignment would be easy to specify.)
+
+The sBOX format only provides gross structuring mechanisms. The content of data blocks is left entirely to the handling of clients/applications. For example, clients must deal with byte ordering issues of the content of the name and data blocks.
+
+The copyable format (and hence the canonical) format put obvious and relatively intuitive constraints on the sorts of data that can appear in a file. However, this may be at odds with other constraints. For example, a file format which wants to be robust in the face of imperfect transmission might want to provide redundant offset information which sBOX does not allow. It might want to escape certain byte sequences to guarantee they only happen in controlled situations. sBOX does not and cannot allow these sorts of restrictions. Most of the time, however, such a file format will want to be a streamable, sequential format anyway, in which case sBOX is a poor match in the first place. 
+
+@bye
