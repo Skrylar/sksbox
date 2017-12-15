@@ -1,0 +1,204 @@
+
+@ifnottex
+@node Top
+@top skSBOX
+
+A native Nim implementation of Sean Barret's @code{sBOX} generic file format.
+
+Version 0.1 is able to read any sBOX file, and write legal (though perhaps not specific types of) sBOX files.  An easy API is provided, layered atop the @code{streams} file.
+
+@menu
+* Special Types::Some base types this module needs.
+* Directory Entries::How data is stored within sBOX files.
+* Directory Offsets::Where the directory can be found in a file.
+* On Copyable and Canonical Forms::Special forms and compliance notes.
+* Writing sBOX Files::How to store data in an sBOX.
+* Reading sBOX Files::How to get data back out of an sBOX.
+* sBOX File Format Specification v1.0::Original specification for sBOX files.
+@end menu
+
+@end ifnottex
+
+@node Special Types
+@chapter Special Types
+
+@example
+UserSignature* = array[0..15, uint8]
+DirectoryFieldType* = uint32
+@end example
+
+@table @code
+@item UserSignature
+Stores a sixteen byte signature, used at the beginning of sBOX files.  Used for reading and comparison against expectations.
+@item DirectoryFieldType
+The type used by directory fields in sBOX files managed by this module.  If you wanted to have an @samp{sBOX 64} format, you would change this to @code{uint64}.
+@end table
+
+@node Directory Entries
+@chapter Directory Entries
+
+Directory entries map names to locations within the file where values may be read.
+
+@example
+DirectoryEntry* = object
+  value_offset*: DirectoryFieldType
+  value_size*: DirectoryFieldType
+  name_size*: DirectoryFieldType
+  name_offset*: DirectoryFieldType
+  name*: string
+@end example
+
+@vtable @code
+@item value_offset
+Stores the offset to the block within the file, in bytes.
+@item value_size
+Stores the size of the block within the file, in bytes.
+@item name_size
+@itemx name_offset
+If names are not being read (ex. when some directory entries have names larger than you want to read right now), the length of the name is stored.  The location of the name, in bytes, is also stored as an offset.  You will need to seek in the stream and read from it manually.
+@item name
+If names are being read (ex. when preparing to write a new file, or reading a directory ahead of time) this string holds both the value and length.
+@end vtable
+
+@node Directory Offsets
+@chapter Directory Offsets
+
+sBOX allows a directory to appear anywhere within a file, and the location of the directory is stored either at the beginning or ending of a file.  @code{DiroffLocation} stores which end of the file the location of the directory can be found.
+
+@example
+DiroffLocation* = enum
+  DiroffAtStart = 0
+  DiroffAtEnd
+@end example
+
+@node On Copyable and Canonical Forms
+@chapter On Copyable and Canonical Forms
+
+sksbox does not enforce what the specification calls @emph{copyable} or @emph{canonical} forms.  Both of those forms are the result of voluntary restrictions aimed at making certain kinds of tooling easier to rely upon.  sksbox is able to read files in either format.  sksbox does not expicilty inhibit creating copyable or caonical files, but the focus of 0.1 was on being able to read and write data and directories easily.
+
+@node Writing sBOX Files
+@chapter Writing sBOX Files
+
+The @code{SboxWriter} object sits atop a stream from Nim's @code{streams} module (0.17).  It provides a number of procedures to facilitate book-keeping while creating the file, and defers to the @code{streams} module for actual data writing.
+
+Basically, you do this:
+
+@enumerate
+@item
+Open a file stream.
+@item
+``Open'' the @code{SboxWriter}, passing in the file stream.
+@item
+Write the header (using @code{write_header}.)
+@item
+For some number of blocks, @code{open_block}, write data, then @code{close_block.}
+@item
+@code{write_directory}
+@item
+@code{write_tail}
+@item
+Flush and close the file stream.
+@end enumerate
+
+@quotation Note
+You can open multiple blocks at a time, and close them when needed.  This creates @dfn{overlapping entries} in the directory.  Overlaps are allowed for general use, but do not conform to copyable or canonical special cases of sBOX files.
+@end quotation
+
+@section Writer Type
+
+@example
+SboxWriter* = object
+  diroff_location*: DiroffLocation
+@end example
+
+@section Procedures
+
+@subsection Lifecycle
+
+@deffn Proc open self: var SboxWriter; s: Stream
+Opens the @code{SboxWriter} with the given underlying stream @code{s}.  Internal values are reset.  Since no dynamic allocation or seeking takes place at this time, it is impossible for @code{open} to fail.
+@end deffn
+
+@subsection Header and Tail
+
+@deffn Proc write_header self: var SboxWriter; signature: UserSignature
+Writes the header of the sBOX file to the underlying stream.  @code{signature} is a sixteen byte array for use by the application writing the file, so set it to whatever you want.
+@end deffn
+
+@deffn Proc write_tail self: var SboxWriter
+Writes the tail of the sBOX file to the underlying stream.  Signifies you are done writing the file in sBOX terms.  You may continue to use the stream afterwards, although doing so can result in invalid sBOX files.
+@end deffn
+
+@subsection Directory
+
+@deffn Proc write_directory self: var SboxWriter
+Writes the directory to the stream and records, within the @code{SboxWriter}, where it has been written.  This procedure assumes you have already written all of your data to the stream and used both @code{open_block} and @code{close_block} to manage that information.
+@end deffn
+
+@deffn Proc open_block self: var SboxWriter; blockname: string
+Opens a new block.  Records the current location in the stream, and waits for a future call to @code{close_block}.  You may write your binary data to the stream as you see fit (though beware of seeking to previously written areas.)`
+@end deffn
+
+@deffn Proc close_block self: var SboxWriter[; blockname: string = nil]
+Closes a previous block.  Updates the in-memory directory with the length of the most recently closed block and the byte it ended on.  If @var{blockname} is provided, an exception is thrown if somehow the most recently opened block does not have the same name.  In-memory directory data is not written to the stream until a call to @code{write_directory} occurs.
+@end deffn
+
+@node Reading sBOX Files
+@chapter Reading sBOX Files
+
+Reading an sBOX file is relatively simple:
+
+@enumerate
+@item
+Open a file stream.
+@item
+Open the reader on the stream.
+@item
+Read the header of the sBOX file (@code{read_header}).
+@item
+For every entry in the directory, call @code{read_next}.
+@item
+Close the stream.
+@end enumerate
+
+Tail information is only used to find the directory, assuming the directory's offset was not written at the head of the file.  There is no reason to read it @emph{explicitly} aside from pedantry.
+
+It is possible to read a file by checking for the next directory entry, seeking to the value of that entry and reading it.  This involves much seeking as you must seek back to the directory for each value.  You may also read the whole directory at once, store the results in a sequence (for ordered formats) or a hash/crit-bit (for key/value formats) and seek as-needed.  @code{SboxReader} accomidates both methods.
+
+@quotation Note
+Reader is implemented this way because the sBOX format is generic.  It is also not known what the ideal storage format for your use case is; some prefer crit-bits, tries, sequences, alists, or whatever best suits your needs and format.  It is easy enough to wrap the directory reading loop once to give you the format you need, and resort to using that for the rest of your program.
+@end quotation
+
+@section Reader Type
+
+@example
+SboxReader* = object
+  diroff_location*: DiroffLocation
+  dirsize*: DirectoryFieldType
+@end example
+
+@section Procedures
+
+@subsection Lifecycle
+
+@deffn Proc open self: var SboxReader; stream: Stream
+Prepares the reader to use a specific stream.  Values are initialized internally.  No memory is allocated, so this procedure cannot fail.
+@end deffn
+
+@subsection Reading
+
+@deftypefn Proc bool read_header self: var SboxReader; signature: var UserSignature; eof: int = 0
+Attempts to read the sBOX header from the stream, locate the directory offset, and update internal state to point to both directory offset and the directory's size.  Returns @code{true} if everything went well, @code{false} otherwise.
+
+If @code{true} is returned, you may immediately start pulling entries with @code{read_next}.
+@end deftypefn
+
+@deftypefn Proc bool read_next self: var SboxReader; data_start, data_len: out DirectoryFieldType; name: out string; max_name_length: int = DefaultMaxNameLength
+Attempts to read the next unread directory entry from the stream.  Will seek to the appropriate area on the underlying stream automatically.  If a directory entry was read, @code{true} is returned and the values @var{data_start}, @var{data_len}, and @var{name} will hold meaningful values.
+
+@var{max_name_length} controls the maximum number of characters to be read for an entry's name.  This prevents maliciously long names from occupying memory.  If more text is to a name than this value then @var{name} will be truncated.  If the maximum name length is less than one, @var{name} will be @code{nil}.
+@end deftypefn
+
+@include sbox.texi
+
+@bye

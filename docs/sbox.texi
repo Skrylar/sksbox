@@ -1,6 +1,5 @@
 
-@top sboxspec10
-
+@node sBOX File Format Specification v1.0
 @appendix sBOX File Format Specification v1.0
 
 Copyright 1998-2000 Sean Barrett (sean at nothings dot org).
@@ -191,5 +190,3 @@ The sBOX format is limited to 4G files. (A 64-bit version of sBOX which uses 8-b
 The sBOX format only provides gross structuring mechanisms. The content of data blocks is left entirely to the handling of clients/applications. For example, clients must deal with byte ordering issues of the content of the name and data blocks.
 
 The copyable format (and hence the canonical) format put obvious and relatively intuitive constraints on the sorts of data that can appear in a file. However, this may be at odds with other constraints. For example, a file format which wants to be robust in the face of imperfect transmission might want to provide redundant offset information which sBOX does not allow. It might want to escape certain byte sequences to guarantee they only happen in controlled situations. sBOX does not and cannot allow these sorts of restrictions. Most of the time, however, such a file format will want to be a streamable, sequential format anyway, in which case sBOX is a poor match in the first place. 
-
-@bye
